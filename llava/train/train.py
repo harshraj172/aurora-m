@@ -67,6 +67,8 @@ class DataArguments:
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
     image_grid_pinpoints: Optional[str] = field(default=None)
+    number_of_hilbert_patches: Optional[int] = field(default=20,
+                                            metadata={"help": "Number of non-overlapping patches to divide the image into."})
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
@@ -542,6 +544,89 @@ def preprocess(
 
     return dict(input_ids=input_ids, labels=targets)
 
+def split_image_into_quadrants(image):
+    """
+    Splits a PyTorch tensor representing an image into four quadrants.
+    
+    Parameters:
+    - image: A PyTorch tensor of shape (C, H, W)
+    
+    Returns:
+    - A list of four PyTorch tensors, each representing a quadrant.
+    """
+    # Calculate the center of the image
+    C, H, W = image.shape
+    center_H, center_W = H // 2, W // 2
+    
+    # Extract the four quadrants
+    top_left = image[:, :center_H, :center_W]
+    top_right = image[:, :center_H, center_W:]
+    bottom_left = image[:, center_H:, :center_W]
+    bottom_right = image[:, center_H:, center_W:]
+    
+    # Return the quadrants as a list
+    quadrants = [top_left, top_right, bottom_left, bottom_right]
+    
+    return quadrants + [image]
+
+def gilbert2d(width, height):
+    """
+    Generalized Hilbert ('gilbert') space-filling curve for arbitrary-sized
+    2D rectangular grids. Generates discrete 2D coordinates to fill a rectangle
+    of size (width x height).
+    """
+    # Inner function to generate the 2D coordinates
+    def generate2d(x, y, ax, ay, bx, by):
+        """
+        Generate the 2D coordinates in a rectangle bounded by the vectors (ax, ay) and (bx, by).
+        """
+        s = abs(ax + ay) // 2
+        if s == 0:
+            yield x, y
+        else:
+            for dx, dy in generate2d(x, y, bx//2, by//2, ax//2, ay//2):
+                yield dx, dy
+            for dx, dy in generate2d(x+ax//2, y+ay//2, ax//2, ay//2, bx//2, by//2):
+                yield dx, dy
+            for dx, dy in generate2d(x+(ax+bx)//2, y+(ay+by)//2, -ay//2, -ax//2, -(by-ax)//2, -(bx-ay)//2):
+                yield dx, dy
+            for dx, dy in generate2d(x+ax//2+bx//2, y+ay//2+by//2, -bx//2, -by//2, -ax//2, -ay//2):
+                yield dx, dy
+            if ax+ay < 0 and (bx != 0 or by != 0):
+                yield x+ax, y+ay
+            elif ax+ay >= 0 and (ax != 0 or ay != 0):
+                yield x+(ax-bx)//2, y+(ay-by)//2
+
+    # Use the appropriate generator based on the aspect ratio
+    if width >= height:
+        return generate2d(0, 0, width, 0, 0, height)
+    else:
+        return generate2d(0, 0, 0, height, width, 0)
+
+def generate_image_patches(image_tensor, patch_size):
+    """
+    Generates patches from an image tensor using a Hilbert curve.
+
+    Parameters:
+        image_tensor (torch.Tensor): The input image tensor.
+        patch_size (int): The size of each patch (assumed to be square).
+        
+    Yields:
+        torch.Tensor: The next image patch.
+    """
+    assert image_tensor.dim() == 3, "Input image tensor should be 3D (C, H, W)"
+    C, H, W = image_tensor.shape
+    assert H % patch_size == 0 and W % patch_size == 0, "Image dimensions must be divisible by the patch size"
+
+    # Iterate over the Hilbert curve coordinates
+    for x, y in gilbert2d(W // patch_size, H // patch_size):
+        # Calculate the top-left corner of the patch
+        x0 = x * patch_size
+        y0 = y * patch_size
+        
+        # Extract the patch from the image tensor
+        patch = image_tensor[:, y0:y0 + patch_size, x0:x0 + patch_size]
+        yield patch
 
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
@@ -587,26 +672,30 @@ class LazySupervisedDataset(Dataset):
                 image = Image.open(io.BytesIO(self.zip_file.read(image_file)))
             except:
                 image = Image.open(io.BytesIO(self.zip_file.read(image_file)))
-            if self.data_args.image_aspect_ratio == 'pad':
-                def expand2square(pil_img, background_color):
-                    width, height = pil_img.size
-                    if width == height:
-                        return pil_img
-                    elif width > height:
-                        result = Image.new(pil_img.mode, (width, width), background_color)
-                        result.paste(pil_img, (0, (width - height) // 2))
-                        return result
-                    else:
-                        result = Image.new(pil_img.mode, (height, height), background_color)
-                        result.paste(pil_img, ((height - width) // 2, 0))
-                        return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]),
-                self.data_args)
+            images = list(generate_image_patches(image, self.data_args.number_of_hilbert_patches))
+            processed_images = []
+            for image in images:
+                if self.data_args.image_aspect_ratio == 'pad':
+                    def expand2square(pil_img, background_color):
+                        width, height = pil_img.size
+                        if width == height:
+                            return pil_img
+                        elif width > height:
+                            result = Image.new(pil_img.mode, (width, width), background_color)
+                            result.paste(pil_img, (0, (width - height) // 2))
+                            return result
+                        else:
+                            result = Image.new(pil_img.mode, (height, height), background_color)
+                            result.paste(pil_img, ((height - width) // 2, 0))
+                            return result
+                    image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                else:
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                processed_images.append(image)
+                sources = preprocess_multimodal(
+                    copy.deepcopy([e["conversations"] for e in sources]),
+                    self.data_args)
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
         data_dict = preprocess(
@@ -618,11 +707,11 @@ class LazySupervisedDataset(Dataset):
                              labels=data_dict["labels"][0])
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
-            data_dict['image'] = image
+            data_dict['image'] = processed_images
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['image'] = [torch.zeros(3, crop_size['height'], crop_size['width'])]*self.data_args.number_of_hilbert_patches
         return data_dict
 @dataclass
 class DataCollatorForSupervisedDataset(object):
@@ -683,15 +772,19 @@ class WdsProcessor:
         has_image = 'image' in sources
         sources = [sources]
         if has_image:
-            if self.data_args.image_aspect_ratio == 'pad':
+            images = list(generate_image_patches(image, self.data_args.number_of_hilbert_patches))
+            processed_images = []
+            for image in images:
+                if self.data_args.image_aspect_ratio == 'pad':
 
-                image = self.expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = self.data_args.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            else:
-                image = self.data_args.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]),
-                self.data_args)
+                    image = self.expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                    image = self.data_args.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                else:
+                    image = self.data_args.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                processed_images.append(image)
+                sources = preprocess_multimodal(
+                    copy.deepcopy([e["conversations"] for e in sources]),
+                    self.data_args)
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
 
@@ -705,11 +798,11 @@ class WdsProcessor:
 
 
         if has_image:
-            data_dict['image'] = image
+            data_dict['image'] = processed_images
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['image'] = [torch.zeros(3, crop_size['height'], crop_size['width'])]*self.data_args.number_of_hilbert_patches
 
         return data_dict
 

@@ -28,6 +28,7 @@ def eval_model(args):
     disable_torch_init()
 
     model_name = get_model_name_from_path(args.model_path)
+    model_name = "aurora" # fix
     tokenizer, model, image_processor, context_len, text_processor = load_pretrained_model(args.model_path, args.model_base, model_name)
 
     qs = args.query

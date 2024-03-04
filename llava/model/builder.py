@@ -120,8 +120,15 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, trust_remote_code=True, **kwargs)
             else:
+                bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_use_double_quant=False,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.float16
+                    )
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+                # model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+                model = LlavaAuroraForCausalLM.from_pretrained(model_path, quantization_config=bnb_config, low_cpu_mem_usage=True, device_map={"":0})
 
     image_processor = None
     text_tokenizer= None
@@ -129,11 +136,13 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
         vision_tower = model.get_vision_tower()
+        text_tower = model.get_text_tower()
         if not vision_tower.is_loaded:
             vision_tower.load_model()
         vision_tower.to(device='cuda', dtype=torch.float16)
         image_processor = vision_tower.image_processor
-        text_tokenizer = vision_tower.text_tokenizer #NOTE: VERY HACKY. SHOULD BE LOADED BY NAME
+        text_tokenizer = text_tower.textemb_tokenizer
+        # text_tokenizer = vision_tower.text_tokenizer #NOTE: VERY HACKY. SHOULD BE LOADED BY NAME
     elif 'llava' in model_name.lower():
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)

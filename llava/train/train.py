@@ -77,6 +77,7 @@ class DataArguments:
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     train_supervised: bool = field(default=True)
+    flashattn2: bool = field(default=True)
     deepspeed_config: str = field(default=None)
     lr: float = field(default=1e-3)
     beta1: float = field(default=0.5)
@@ -500,6 +501,7 @@ def preprocess_mpt(
         input_ids=input_ids,
         labels=targets,
     )
+
 def preprocess_plain(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
@@ -511,7 +513,7 @@ def preprocess_plain(
         assert DEFAULT_IMAGE_TOKEN in source[0]['value']
         source[0]['value'] = DEFAULT_IMAGE_TOKEN
         conversation = source[0]['value'] + source[1]['value'] + conversation_lib.default_conversation.sep
-        conversations.append(conversation)
+        conversations.append(conversation) 
     # tokenize conversations
     input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
     targets = copy.deepcopy(input_ids)
@@ -892,6 +894,8 @@ def train():
             model = LlavaAuroraForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
+                use_flash_attention_2=True if training_args.flashattn2 else False,
+                torch_dtype=compute_dtype,
                 **bnb_model_from_pretrained_args
             )
         else:

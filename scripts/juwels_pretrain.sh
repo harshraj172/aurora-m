@@ -14,18 +14,18 @@ CONDA_ENV="/p/project/ccstdl/shared/generic/miniconda3/envs/raj3_bakklava"
 MINICONDA_PATH="/p/project/ccstdl/shared/generic/miniconda3"
 
 
-MODEL_VERSION="aurora-m/Aurora-40k-hf"
-EXP_NAME="bakllava-quadrant-$MODEL_VERSION-pretrain"
+MODEL_VERSION="aurora-m/aurora-m-v0.1-biden-harris-redteamed"
+EXP_NAME="bakllava-img2text-$MODEL_VERSION-pretrain"
 
 # BAKLLAVA_PATH="/p/project/laionize/marianna/bakllava_original/BakLLaVA"
 BAKLLAVA_PATH="/p/project/ccstdl/raj3/aurora-m"
 
-# DATA_PATH="/p/scratch/ccstdl/marianna/bakllava/blip_laion_cc_sbu_558k.json"
-DATA_PATH="/p/scratch/ccstdl/raj3/aurora-m/blip_laion_cc_sbu_558k_text2text.json"
+DATA_PATH="/p/scratch/ccstdl/marianna/bakllava/blip_laion_cc_sbu_558k.json"
+# DATA_PATH="/p/scratch/ccstdl/raj3/aurora-m/blip_laion_cc_sbu_558k_text2text.json" # for text-to-text tuning 
 TEXT_DATA_PATH="/p/scratch/ccstdl/lumi-data/en/books_2k_part_aa.jsonl"
 IMAGE_FOLDER="/p/scratch/ccstdl/marianna/bakllava/images.zip"
 VISION_TOWER="openai/clip-vit-large-patch14"
-TEXTEMB_TOWER="M-CLIP/LABSE-Vit-L-14"
+TEXTEMB_TOWER="M-CLIP/LABSE-Vit-L-14" # for text-to-text tuning
 OUTPUT_DIR="/p/scratch/ccstdl/raj3/aurora-m/checkpoints/$EXP_NAME"
 
 source ${MINICONDA_PATH}/bin/activate ${CONDA_ENV}
@@ -57,6 +57,7 @@ PROMPT_VERSION=plain
 export PYTHONPATH="$PYTHONPATH:${BAKLLAVA_PATH}"
 
 export CUDA_DEVICE_BLOCKING=1
+# export WANDB_MODE=offline
 
 cd ${BAKLLAVA_PATH}
 
@@ -83,7 +84,7 @@ export CMD="llava/train/train_mem.py \
     --unsupervised_data_path $TEXT_DATA_PATH \
     --vision_tower $VISION_TOWER \
     --text_tower $TEXTEMB_TOWER \
-    --use_text_tower True \
+    --use_text_tower False \
     --tune_mm_mlp_adapter True \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
@@ -92,12 +93,12 @@ export CMD="llava/train/train_mem.py \
     --output_dir $OUTPUT_DIR \
     --resume_from_checkpoint False \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 1 \
+    --per_device_train_batch_size 32 \
+    --per_device_eval_batch_size 8 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 10 \
+    --save_steps 100 \
     --save_total_limit 1 \
     --learning_rate 2e-3 \
     --weight_decay 0. \
@@ -107,10 +108,20 @@ export CMD="llava/train/train_mem.py \
     --tf32 True \
     --model_max_length 4096 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 1 \
+    --dataloader_num_workers 8 \
     --lazy_preprocess True \
-    --report_to none \
+    --report_to wandb \
+    --flashattn2 True \
     --deepspeed ./scripts/zero3.json "
+
+# MODEL_PATH_FOR_EVAL="/p/scratch/ccstdl/raj3/aurora-m/checkpoints/bakllava-quadrant-aurora-m/Aurora-90k-hf-pretrain/supervised_checkpoint-500"
+# export CMD="llava/eval/run_llava.py \
+#     --model-path $MODEL_PATH_FOR_EVAL \
+#     --image-file "https://wallpapercave.com/wp/wp1882329.jpg" \
+#     --query "what is the picture about?" \
+#     --conv-mode plain "
+
+# export CMD="llava/upload_llava.py"
 
 srun --wait=60 \
     --kill-on-bad-exit=1 \

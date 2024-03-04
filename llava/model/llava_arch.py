@@ -68,7 +68,7 @@ class LlavaMetaModel:
         
         self.config.use_mm_proj = True
         self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear')
-        self.config.mm_hidden_size = text_tower.LinearTransformation.out_features if model_args.use_text_tower else vision_tower.vision_tower.projection_dim
+        self.config.mm_hidden_size = text_tower.LinearTransformation.out_features if model_args.use_text_tower else vision_tower.vision_tower.visual_projection.out_features
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
 
